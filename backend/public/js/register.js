@@ -165,7 +165,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // Gmail Check
-    const emailVal = emailInput.value.trim();
+    const emailVal = emailInput.value.toLowerCase().trim();
     if (!emailVal.endsWith('@gmail.com')) {
       showError('Registration requires a valid Gmail account (must end with @gmail.com).');
       return;
@@ -188,6 +188,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Setup FormData
     const formData = new FormData(form);
+    formData.set('email', emailVal);
     formData.set('paymentScreenshot', selectedFile);
 
     // Disable button & show spinner

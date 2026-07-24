@@ -57,12 +57,14 @@ router.post('/', upload.single('paymentScreenshot'), async (req, res) => {
       paymentUTR
     } = req.body;
 
+    const sanitizedEmail = email ? email.toLowerCase().trim() : '';
+
     // 1. Validations
     if (!req.file) {
       return res.status(400).json({ message: 'Payment screenshot is required!' });
     }
 
-    if (!email || !email.endsWith('@gmail.com')) {
+    if (!sanitizedEmail || !sanitizedEmail.endsWith('@gmail.com')) {
       return res.status(400).json({ message: 'A valid Gmail address is required!' });
     }
 
@@ -82,7 +84,7 @@ router.post('/', upload.single('paymentScreenshot'), async (req, res) => {
     }
 
     // Check unique email
-    const existingEmail = await User.findOne({ email });
+    const existingEmail = await User.findOne({ email: sanitizedEmail });
     if (existingEmail) {
       return res.status(400).json({ message: 'This email is already registered!' });
     }
@@ -159,7 +161,7 @@ router.post('/', upload.single('paymentScreenshot'), async (req, res) => {
       name,
       age: parseInt(age),
       gender,
-      email,
+      email: sanitizedEmail,
       whatsapp,
       institution,
       course,

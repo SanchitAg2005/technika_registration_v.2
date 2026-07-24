@@ -176,13 +176,20 @@ async function loadDashboardData() {
   }
 
   try {
-    // A. Fetch everything in parallel to eliminate HTTP request waterfalls
-    const [meResponse, notificationsResponse, eventsResponse, teamsResponse] = await Promise.all([
+    // A. Fetch required segments in parallel, conditionally adding static events list if not already loaded
+    const promises = [
       fetch('/api/auth/me', { headers: { 'Authorization': `Bearer ${token}` } }),
       fetch('/api/notifications', { headers: { 'Authorization': `Bearer ${token}` } }),
-      fetch('/api/events'),
       fetch('/api/teams/my-teams', { headers: { 'Authorization': `Bearer ${token}` } })
-    ]);
+    ];
+
+    const fetchEventsIndex = allEventsList.length === 0 ? promises.push(fetch('/api/events')) - 1 : -1;
+
+    const responses = await Promise.all(promises);
+
+    const meResponse = responses[0];
+    const notificationsResponse = responses[1];
+    const teamsResponse = responses[2];
 
     if (!meResponse.ok) {
       // Token might be expired
@@ -191,12 +198,16 @@ async function loadDashboardData() {
       return;
     }
 
-    const [meData, notifications, events, teams] = await Promise.all([
+    const [meData, notifications, teams] = await Promise.all([
       meResponse.json(),
       notificationsResponse.ok ? notificationsResponse.json() : [],
-      eventsResponse.ok ? eventsResponse.json() : [],
       teamsResponse.ok ? teamsResponse.json() : []
     ]);
+
+    let events = allEventsList;
+    if (fetchEventsIndex !== -1 && responses[fetchEventsIndex].ok) {
+      events = await responses[fetchEventsIndex].json();
+    }
 
     currentUser = meData.user;
     registeredEventIds = new Set(meData.registeredEvents.map(r => r.eventId));
@@ -336,6 +347,43 @@ async function respondToInvite(notifId, action) {
   }
 }
 
+// Background refresh helpers for selective polling updates
+async function refreshNotificationsOnly() {
+  try {
+    const res = await fetch('/api/notifications', { headers: { 'Authorization': `Bearer ${token}` } });
+    if (res.ok) {
+      const notifications = await res.json();
+      renderNotificationsUI(notifications);
+    }
+  } catch (err) {
+    console.error('Error refreshing notifications:', err);
+  }
+}
+
+async function refreshTeamsAndRegistrationsOnly() {
+  try {
+    const [meResponse, teamsResponse] = await Promise.all([
+      fetch('/api/auth/me', { headers: { 'Authorization': `Bearer ${token}` } }),
+      fetch('/api/teams/my-teams', { headers: { 'Authorization': `Bearer ${token}` } })
+    ]);
+
+    if (meResponse.ok && teamsResponse.ok) {
+      const meData = await meResponse.json();
+      const teams = await teamsResponse.json();
+
+      currentUser = meData.user;
+      registeredEventIds = new Set(meData.registeredEvents.map(r => r.eventId));
+      myTeamsList = teams;
+
+      renderRegisteredEvents(meData.registeredEvents);
+      renderIndividualEnrollment();
+      renderTeamEnrollment();
+    }
+  } catch (err) {
+    console.error('Error refreshing teams and registrations:', err);
+  }
+}
+
 // --- 6. Polling Update Loop ---
 function startDashboardPolling() {
   setInterval(async () => {
@@ -352,18 +400,27 @@ function startDashboardPolling() {
       if (pollRes.ok) {
         const pollData = await pollRes.json();
         
-        // Trigger dashboard reload only if a new update occurred
-        if (pollData.notifTimestamp > lastNotifTimestamp || pollData.teamTimestamp > lastTeamTimestamp) {
+        let needsNotifRefresh = pollData.notifTimestamp > lastNotifTimestamp;
+        let needsTeamRefresh = pollData.teamTimestamp > lastTeamTimestamp;
+
+        if (needsNotifRefresh || needsTeamRefresh) {
           console.log('[POLL] Background changes detected. Refreshing data...');
-          lastNotifTimestamp = pollData.notifTimestamp;
-          lastTeamTimestamp = pollData.teamTimestamp;
-          await loadDashboardData();
+          
+          if (needsNotifRefresh) {
+            lastNotifTimestamp = pollData.notifTimestamp;
+            await refreshNotificationsOnly();
+          }
+          
+          if (needsTeamRefresh) {
+            lastTeamTimestamp = pollData.teamTimestamp;
+            await refreshTeamsAndRegistrationsOnly();
+          }
         }
       }
     } catch (err) {
       console.warn('[POLL] Error checking for dashboard updates:', err.message);
     }
-  }, 15000); // 15 seconds polling interval
+  }, 30000); // 30 seconds polling interval
 }
 
 // Render dynamic enrolled events list inside Profile tab

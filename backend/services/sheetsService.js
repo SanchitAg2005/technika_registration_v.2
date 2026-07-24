@@ -206,13 +206,17 @@ const processSingleTask = async (task) => {
 
   task = claimedTask;
 
-  if (!isConfigured || !sheetsClient) {
-    // Mock successful sync for testing when API is not configured
+  if (!isConfigured) {
+    // Mock successful sync for testing when API is not configured (local dev fallback)
     task.status = 'SUCCESS';
     task.processedAt = new Date();
     await task.save();
     console.log(`[MOCK SYNC] Successfully synced ${task.type} for ID: ${task.registrationId} to Google Sheets`);
     return;
+  }
+
+  if (!sheetsClient) {
+    throw new Error('Google Sheets client is configured but failed to initialize (check auth credentials and private key format).');
   }
 
   try {
@@ -239,13 +243,28 @@ const processSingleTask = async (task) => {
     } else if (task.type === 'REGISTRATION') {
       range = 'Registrations!A:F';
       const d = task.data;
+      
+      // Resolve Leader ID dynamically if it is a TEAM registration
+      let resolvedLeaderId = d.leaderId;
+      if (d.registrationType === 'TEAM' && d.teamId && d.teamId !== 'N/A') {
+        try {
+          const Team = require('../models/Team');
+          const team = await Team.findOne({ teamId: d.teamId });
+          if (team) {
+            resolvedLeaderId = team.leaderId;
+          }
+        } catch (teamErr) {
+          console.warn(`[SYNC WARNING] Failed to dynamically resolve Leader ID for Team ${d.teamId}:`, teamErr.message);
+        }
+      }
+
       values = [[
         d.registrationId,
         d.eventId,
         d.eventName,
         d.registrationType,
         d.teamId,
-        d.leaderId
+        resolvedLeaderId
       ]];
     }
 
@@ -412,14 +431,14 @@ const processSingleTask = async (task) => {
           for (let i = 0; i < existingRows.length; i++) {
             if (existingRows[i] && existingRows[i][0] === user.registrationId) {
               const rowIndex = i + 1;
-              const updatedRow = [[
+               const updatedRow = [[
                 user.registrationId,
                 user.name,
                 user.email,
                 user.whatsapp,
-                existingRows[i][4], // Keep original Event Name
-                existingRows[i][5], // Keep original Registration Type
-                existingRows[i][6]  // Keep original Team ID
+                existingRows[i][4] || '', // Keep original Event Name
+                existingRows[i][5] || '', // Keep original Registration Type
+                existingRows[i][6] || ''  // Keep original Team ID
               ]];
               await sheetsClient.spreadsheets.values.update({
                 spreadsheetId,
@@ -547,16 +566,16 @@ const startQueueWorker = () => {
     return;
   }
 
-  // On startup, reset all failed tasks back to PENDING so they are retried now that credentials are fixed!
+  // On startup, reset all failed and stuck processing tasks back to PENDING so they are retried!
   SheetsQueue.updateMany(
-    { status: 'FAILED' },
+    { status: { $in: ['FAILED', 'PROCESSING'] } },
     { status: 'PENDING', retryCount: 0, errorMessage: null }
   ).then(res => {
     if (res.modifiedCount > 0) {
-      console.log(`[SHEETS WORKER] Reset ${res.modifiedCount} failed sync tasks back to PENDING for retry.`);
+      console.log(`[SHEETS WORKER] Reset ${res.modifiedCount} failed/stuck sync tasks back to PENDING for retry.`);
     }
   }).catch(err => {
-    console.error('[SHEETS WORKER] Failed to reset failed tasks:', err.message);
+    console.error('[SHEETS WORKER] Failed to reset failed/stuck tasks:', err.message);
   });
 
   // Run every 2 minutes
